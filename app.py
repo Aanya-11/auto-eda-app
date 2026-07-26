@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from eda_logic import run_eda
+from eda_logic import run_eda, detect_column_types, apply_filters
 from ai_insights import generate_insights
 
 st.set_page_config(
@@ -119,13 +119,60 @@ st.markdown("""
     <div class="hero-icon">📊</div>
     <div class="hero-title">Auto-EDA</div>
 </div>
-<div class="hero-subtitle">Upload any CSV and get instant charts, stats, and AI-generated insights — no code required.</div>
+<div class="hero-subtitle">Upload any CSV, Excel, or JSON file and get instant charts, stats, and AI-generated insights — no code required.</div>
 """, unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("Upload your CSV", type=["csv"], label_visibility="collapsed")
+uploaded_file = st.file_uploader(
+    "Upload your data file",
+    type=["csv", "xlsx", "xls", "json"],
+    label_visibility="collapsed"
+)
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+    file_name = uploaded_file.name.lower()
+
+    try:
+        if file_name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        elif file_name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(uploaded_file)
+        elif file_name.endswith(".json"):
+            df = pd.read_json(uploaded_file)
+        else:
+            st.error("Unsupported file type.")
+            st.stop()
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        st.stop()
+
+    st.markdown("### 🎛️ Filters (optional)")
+    with st.expander("Click to filter your data before analysis"):
+        column_types_preview = detect_column_types(df)
+        filters = {}
+
+        filter_cols = st.multiselect(
+            "Choose columns to filter by",
+            options=df.columns.tolist()
+        )
+
+        for col in filter_cols:
+            col_type = column_types_preview.get(col)
+
+            if col_type == "categorical":
+                unique_vals = df[col].dropna().unique().tolist()
+                selected_vals = st.multiselect(f"Filter '{col}'", options=unique_vals, default=unique_vals)
+                filters[col] = {"type": "categorical", "values": selected_vals}
+
+            elif col_type == "numeric":
+                min_val = float(df[col].min())
+                max_val = float(df[col].max())
+                selected_range = st.slider(f"Filter '{col}' range", min_val, max_val, (min_val, max_val))
+                filters[col] = {"type": "numeric", "range": selected_range}
+
+        if filters:
+            df = apply_filters(df, filters)
+            st.success(f"Showing {len(df)} rows after filtering.")
+
     results = run_eda(df)
 
     st.markdown("### 🔍 Data Preview")
@@ -171,4 +218,4 @@ if uploaded_file is not None:
             )
         st.markdown(insights)
 else:
-    st.info("👆 Upload a CSV file to get started.")
+    st.info("👆 Upload a CSV, Excel, or JSON file to get started.")

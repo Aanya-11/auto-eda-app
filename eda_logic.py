@@ -29,7 +29,19 @@ def detect_column_types(df):
             column_types[col] = "text"
 
     return column_types
-
+def apply_filters(df, filters):
+    """Apply a dictionary of filters to the dataframe."""
+    filtered_df = df.copy()
+    
+    for col, condition in filters.items():
+        if condition["type"] == "categorical":
+            if condition["values"]:
+                filtered_df = filtered_df[filtered_df[col].isin(condition["values"])]
+        elif condition["type"] == "numeric":
+            low, high = condition["range"]
+            filtered_df = filtered_df[(filtered_df[col] >= low) & (filtered_df[col] <= high)]
+    
+    return filtered_df
 
 def get_summary(df):
     """Overall dataset summary."""
