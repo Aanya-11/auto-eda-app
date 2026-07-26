@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.io as pio
 
 
 def detect_column_types(df):
@@ -66,23 +67,9 @@ def apply_imputation(df, strategy_map):
     return imputed_df
 
 
-# Maximum unique values allowed for one-hot encoding.
-# Above this, get_dummies() creates too many columns and can exhaust memory.
-ONEHOT_MAX_UNIQUE = 50
-
-
 def apply_transformations(df, transform_map):
-    """
-    Apply log scale, normalization, or one-hot encoding to selected columns.
-
-    Returns:
-        transformed_df: the transformed dataframe
-        skipped_cols: list of (col_name, unique_count) tuples that were
-                      skipped because they had too many unique values for
-                      one-hot encoding
-    """
+    """Apply log scale, normalization, label encoding, or one-hot encoding to selected columns."""
     transformed_df = df.copy()
-    skipped_cols = []
 
     for col, method in transform_map.items():
         if method == "log":
@@ -99,17 +86,16 @@ def apply_transformations(df, transform_map):
                 transformed_df[col] = (transformed_df[col] - min_val) / (max_val - min_val)
 
         elif method == "onehot":
-            unique_count = transformed_df[col].nunique()
-            if unique_count > ONEHOT_MAX_UNIQUE:
-                # Too many unique values -- one-hot encoding would create
-                # an enormous number of columns and can crash with an
-                # out-of-memory error. Skip it and report back to the caller.
-                skipped_cols.append((col, unique_count))
-                continue
             dummies = pd.get_dummies(transformed_df[col], prefix=col)
             transformed_df = pd.concat([transformed_df.drop(columns=[col]), dummies], axis=1)
 
-    return transformed_df, skipped_cols
+        elif method == "label_encode":
+            transformed_df[col] = transformed_df[col].astype("category").cat.codes
+
+        elif method == "skip":
+            continue
+
+    return transformed_df
 
 
 def get_summary(df):
@@ -250,3 +236,126 @@ def run_eda(df):
     }
 
     return results
+
+
+def generate_html_report(df, results, ai_insights_text=""):
+    """Build a single self-contained HTML report string with charts and stats embedded."""
+
+    summary = results["summary"]
+
+    html_parts = []
+
+    html_parts.append(f"""
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Auto-EDA Report</title>
+        <style>
+            body {{
+                background-color: #0e1117;
+                color: #fafafa;
+                font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+                padding: 2rem;
+                max-width: 1000px;
+                margin: auto;
+            }}
+            h1 {{
+                background: linear-gradient(90deg, #2dd4bf, #60a5fa, #a78bfa);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }}
+            h2 {{
+                border-left: 4px solid #14b8a6;
+                padding-left: 0.6rem;
+                margin-top: 2rem;
+            }}
+            .metric-row {{
+                display: flex;
+                gap: 1rem;
+                margin: 1rem 0;
+            }}
+            .metric-card {{
+                background: #1c1f26;
+                border: 1px solid #2a2e37;
+                border-radius: 12px;
+                padding: 1rem;
+                flex: 1;
+            }}
+            .metric-value {{
+                color: #2dd4bf;
+                font-size: 1.5rem;
+                font-weight: bold;
+            }}
+            .metric-label {{
+                color: #9ca3af;
+                font-size: 0.8rem;
+                text-transform: uppercase;
+            }}
+            .insights-box {{
+                background: #1c1f26;
+                border: 1px solid #2a2e37;
+                border-radius: 12px;
+                padding: 1.2rem;
+                white-space: pre-wrap;
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>📊 Auto-EDA Report</h1>
+        <p>Generated automatically from your uploaded dataset.</p>
+
+        <h2>Summary</h2>
+        <div class="metric-row">
+            <div class="metric-card"><div class="metric-value">{summary['n_rows']:,}</div><div class="metric-label">Rows</div></div>
+            <div class="metric-card"><div class="metric-value">{summary['n_cols']}</div><div class="metric-label">Columns</div></div>
+            <div class="metric-card"><div class="metric-value">{summary['duplicates']}</div><div class="metric-label">Duplicates</div></div>
+            <div class="metric-card"><div class="metric-value">{summary['missing_total_pct']}%</div><div class="metric-label">Missing</div></div>
+        </div>
+    """)
+
+    if ai_insights_text:
+        html_parts.append(f"""
+        <h2>🤖 AI-Generated Insights</h2>
+        <div class="insights-box">{ai_insights_text}</div>
+        """)
+
+    if results["outliers"]:
+        html_parts.append("<h2>⚠️ Outliers Detected</h2><ul>")
+        for col, info in results["outliers"].items():
+            html_parts.append(
+                f"<li><b>{col}</b>: {info['count']} outliers ({info['pct']}%) "
+                f"— outside range [{info['lower_bound']}, {info['upper_bound']}]</li>"
+            )
+        html_parts.append("</ul>")
+
+    include_js = True
+
+    if results["numeric_charts"]:
+        html_parts.append("<h2>📈 Numeric Columns</h2>")
+        for col, fig in results["numeric_charts"].items():
+            chart_html = pio.to_html(fig, include_plotlyjs=("cdn" if include_js else False), full_html=False)
+            html_parts.append(chart_html)
+            include_js = False
+
+    if results["categorical_charts"]:
+        html_parts.append("<h2>🗂️ Categorical Columns</h2>")
+        for col, fig in results["categorical_charts"].items():
+            chart_html = pio.to_html(fig, include_plotlyjs=("cdn" if include_js else False), full_html=False)
+            html_parts.append(chart_html)
+            include_js = False
+
+    if results["correlation_chart"]:
+        html_parts.append("<h2>🔗 Correlation Heatmap</h2>")
+        chart_html = pio.to_html(results["correlation_chart"], include_plotlyjs=("cdn" if include_js else False), full_html=False)
+        html_parts.append(chart_html)
+        include_js = False
+
+    if results["missing_matrix_chart"]:
+        html_parts.append("<h2>🕳️ Missing Values Map</h2>")
+        chart_html = pio.to_html(results["missing_matrix_chart"], include_plotlyjs=("cdn" if include_js else False), full_html=False)
+        html_parts.append(chart_html)
+        include_js = False
+
+    html_parts.append("</body></html>")
+
+    return "".join(html_parts)

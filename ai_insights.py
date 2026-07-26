@@ -1,5 +1,4 @@
 import os
-import json
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -11,9 +10,9 @@ def generate_insights(summary, column_types, numeric_stats, categorical_stats):
     """Send dataset summary to Groq and get plain-English insights."""
 
     prompt = f"""
-You are a data analyst. Based on this dataset summary, write 3-4 short, 
-plain-English insights a business person would find useful. Keep each 
-insight to 1-2 sentences. Do not repeat raw numbers robotically — 
+You are a data analyst. Based on this dataset summary, write 3-4 short,
+plain-English insights a business person would find useful. Keep each
+insight to 1-2 sentences. Do not repeat raw numbers robotically —
 explain what they mean.
 
 Dataset summary:
@@ -41,86 +40,43 @@ Write the insights as a bullet list.
         return f"Could not generate AI insights: {e}"
 
 
-def ask_data_question(df, question):
+def answer_data_question(question, summary, column_types, numeric_stats, categorical_stats, outliers):
     """
-    Takes a natural-language question about the dataframe and returns a dict:
-    {
-        "chart_type": "bar" | "line" | "scatter" | "histogram" | "pie" | "none",
-        "x": <column name or None>,
-        "y": <column name or None>,
-        "agg": "sum" | "mean" | "count" | "median" | None,
-        "answer_text": "<short plain-English answer/explanation>"
-    }
-    If the question can't be answered with a chart, chart_type will be "none"
-    and answer_text will contain a direct text answer instead.
+    Answer a free-form question about the dataset using ONLY the stats
+    already computed by the app (no code execution on the user's data,
+    which keeps this safe to run in a publicly deployed app).
     """
-    columns_info = []
-    for col in df.columns:
-        dtype = str(df[col].dtype)
-        sample_vals = df[col].dropna().unique()[:5].tolist()
-        columns_info.append(f"- {col} ({dtype}), sample values: {sample_vals}")
 
-    schema_text = "\n".join(columns_info)
+    prompt = f"""
+You are a data analyst assistant. Answer the user's question using ONLY
+the precomputed information below. Do not invent numbers that aren't
+present here. If the question can't be answered from this information,
+say so clearly and suggest what additional analysis would be needed.
 
-    system_prompt = f"""You are a data analyst assistant. The user has a pandas dataframe with these columns:
+Dataset summary:
+- Rows: {summary['n_rows']}
+- Columns: {summary['n_cols']}
+- Duplicate rows: {summary['duplicates']}
+- Missing data: {summary['missing_total_pct']}%
 
-{schema_text}
+Column types: {column_types}
 
-The dataframe has {len(df)} rows.
+Numeric column stats: {numeric_stats}
 
-Given a natural-language question, respond with ONLY a JSON object (no markdown, no explanation outside the JSON) in this exact format:
-{{
-    "chart_type": "bar" | "line" | "scatter" | "histogram" | "pie" | "none",
-    "x": "<exact column name from the list above, or null>",
-    "y": "<exact column name from the list above, or null>",
-    "agg": "sum" | "mean" | "count" | "median" | null,
-    "answer_text": "<a short 1-2 sentence plain-English answer or explanation>"
-}}
+Categorical column stats: {categorical_stats}
 
-Rules:
-- Only use column names that exist in the schema above, exactly as spelled.
-- If the question asks for a trend/comparison over time, prefer "line" chart with the date/time column as x.
-- If comparing categories, prefer "bar" chart with agg set.
-- If showing distribution of one numeric column, use "histogram" with x set and y null.
-- If the question cannot be visualized (e.g. "what does this dataset contain"), set chart_type to "none" and put the full answer in answer_text.
-- Respond with ONLY the JSON object, nothing else.
+Outlier summary: {outliers}
+
+User's question: "{question}"
+
+Give a concise, direct answer in plain English (2-5 sentences).
 """
 
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question}
-            ],
-            temperature=0.2,
-            max_tokens=500
+            messages=[{"role": "user", "content": prompt}],
         )
-        raw_text = response.choices[0].message.content.strip()
+        return response.choices[0].message.content
     except Exception as e:
-        return {
-            "chart_type": "none",
-            "x": None,
-            "y": None,
-            "agg": None,
-            "answer_text": f"Could not reach the AI: {e}"
-        }
-
-    # Strip markdown code fences if the model added them anyway
-    if raw_text.startswith("```"):
-        raw_text = raw_text.strip("`")
-        if raw_text.lower().startswith("json"):
-            raw_text = raw_text[4:].strip()
-
-    try:
-        result = json.loads(raw_text)
-    except json.JSONDecodeError:
-        result = {
-            "chart_type": "none",
-            "x": None,
-            "y": None,
-            "agg": None,
-            "answer_text": "Sorry, I couldn't understand how to answer that question. Try rephrasing it."
-        }
-
-    return result
+        return f"Could not answer the question: {e}"

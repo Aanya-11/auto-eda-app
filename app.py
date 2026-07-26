@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from eda_logic import run_eda, detect_column_types, apply_filters, apply_imputation, apply_transformations
-from ai_insights import generate_insights, ask_data_question
+from eda_logic import (
+    run_eda, detect_column_types, apply_filters, apply_imputation,
+    apply_transformations, generate_html_report
+)
+from ai_insights import generate_insights, answer_data_question
 
 st.set_page_config(
     page_title="Auto-EDA App",
@@ -173,7 +175,6 @@ if uploaded_file is not None:
         if filters:
             df = apply_filters(df, filters)
             st.success(f"Showing {len(df)} rows after filtering.")
-            st.dataframe(df, use_container_width=True, height=350)
 
     missing_cols = df.columns[df.isnull().any()].tolist()
     if missing_cols:
@@ -206,7 +207,6 @@ if uploaded_file is not None:
             if strategy_map and st.button("Apply Cleaning"):
                 df = apply_imputation(df, strategy_map)
                 st.success(f"Cleaned! {len(df)} rows remain.")
-                st.dataframe(df, use_container_width=True, height=350)
 
     st.markdown("### 🔧 Transform Columns (optional)")
     with st.expander("Click to scale, normalize, or encode columns"):
@@ -220,6 +220,8 @@ if uploaded_file is not None:
 
         for col in transform_cols:
             col_type = col_types_for_transform.get(col)
+            unique_count = df[col].nunique()
+
             if col_type == "numeric":
                 method = st.selectbox(
                     f"Method for '{col}' (numeric)",
@@ -227,41 +229,41 @@ if uploaded_file is not None:
                     key=f"transform_{col}"
                 )
             else:
-                unique_count = df[col].nunique()
                 if unique_count > 50:
-                    st.caption(
-                        f"⚠️ '{col}' has {unique_count} unique values — "
-                        f"one-hot encoding will be skipped for this column (too many values, would use too much memory)."
-                    )
+                    st.warning(f"⚠️ '{col}' has {unique_count} unique values — one-hot encoding isn't practical here. Use label encoding instead, or skip.")
+                    options = ["label_encode", "skip"]
+                else:
+                    options = ["onehot", "label_encode", "skip"]
+
                 method = st.selectbox(
                     f"Method for '{col}' (categorical)",
-                    options=["onehot"],
+                    options=options,
                     key=f"transform_{col}"
                 )
             transform_map[col] = method
 
         if transform_map and st.button("Apply Transformations"):
-            df, skipped_cols = apply_transformations(df, transform_map)
-            applied_count = len(transform_map) - len(skipped_cols)
-            if applied_count > 0:
-                st.success(f"Transformed {applied_count} column(s).")
-            if skipped_cols:
-                for col, count in skipped_cols:
-                    st.warning(
-                        f"⚠️ Skipped '{col}' for one-hot encoding — it has {count} unique values "
-                        f"(too many, would use too much memory). Try a column with fewer unique values."
-                    )
-            st.dataframe(df, use_container_width=True, height=350)
+            df = apply_transformations(df, transform_map)
+            st.success(f"Transformed {len(transform_map)} column(s).")
 
     results = run_eda(df)
 
     st.markdown("### 🔍 Data Preview")
-    show_full_data = st.toggle(f"Show full data ({len(df):,} rows)", value=False)
-    if show_full_data:
-        st.dataframe(df, use_container_width=True, height=500)
+    preview_option = st.selectbox(
+        "Rows to show",
+        options=["First 5 rows", "First 100 rows", "Full dataset"],
+        index=0
+    )
+
+    if preview_option == "First 5 rows":
+        preview_df = df.head(5)
+    elif preview_option == "First 100 rows":
+        preview_df = df.head(100)
     else:
-        st.dataframe(df.head(100), use_container_width=True, height=400)
-        st.caption(f"Showing first 100 of {len(df):,} rows. Toggle above to see all rows.")
+        preview_df = df
+
+    st.caption(f"Showing {len(preview_df):,} of {len(df):,} total rows")
+    st.dataframe(preview_df, use_container_width=True, height=400)
 
     st.markdown("### 📈 Summary")
     col1, col2, col3, col4 = st.columns(4)
@@ -313,72 +315,38 @@ if uploaded_file is not None:
 
     with tab5:
         with st.spinner("Generating insights..."):
-            insights = generate_insights(
+            ai_insights_text = generate_insights(
                 results["summary"],
                 results["column_types"],
                 results["numeric_stats"],
                 results["categorical_stats"]
             )
-        st.markdown(insights)
+        st.markdown(ai_insights_text)
+
+        st.markdown("---")
+        st.markdown("#### 📥 Download Full Report")
+        report_html = generate_html_report(df, results, ai_insights_text)
+        st.download_button(
+            label="Download Report (HTML)",
+            data=report_html,
+            file_name="auto_eda_report.html",
+            mime="text/html"
+        )
+        st.caption("Tip: open the downloaded HTML file in any browser, then use its Print option to save as PDF.")
 
     with tab6:
-        st.markdown("Ask a question about your data in plain English, and get an instant chart or answer.")
-        st.caption("Examples: \"show me sales trend over time\", \"top 5 categories by count\", \"distribution of price\"")
-
-        user_question = st.text_input("Your question", placeholder="e.g. What are the top 5 values by count?", key="ask_data_input")
-
-        if st.button("Ask", key="ask_data_button") and user_question.strip():
+        st.write("Ask a question about your dataset in plain English. Answers are based on the stats already computed above (no code is run on your data), so this is safe even in a public app.")
+        user_question = st.text_input("Your question", placeholder="e.g. Which column has the most missing values?")
+        if st.button("Ask") and user_question:
             with st.spinner("Thinking..."):
-                try:
-                    result = ask_data_question(df, user_question)
-                except Exception as e:
-                    st.error(f"Something went wrong talking to the AI: {e}")
-                    result = None
-
-            if result:
-                st.markdown(f"**Answer:** {result.get('answer_text', '')}")
-
-                chart_type = result.get("chart_type")
-                x_col = result.get("x")
-                y_col = result.get("y")
-                agg = result.get("agg")
-
-                try:
-                    if chart_type == "bar" and x_col:
-                        if y_col and agg:
-                            agg_df = df.groupby(x_col)[y_col].agg(agg).reset_index()
-                            fig = px.bar(agg_df, x=x_col, y=y_col, title=f"{agg.title()} of {y_col} by {x_col}")
-                        else:
-                            counts = df[x_col].value_counts().reset_index()
-                            counts.columns = [x_col, "count"]
-                            fig = px.bar(counts, x=x_col, y="count", title=f"Count of {x_col}")
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    elif chart_type == "line" and x_col and y_col:
-                        line_df = df.sort_values(by=x_col)
-                        if agg:
-                            line_df = line_df.groupby(x_col)[y_col].agg(agg).reset_index()
-                        fig = px.line(line_df, x=x_col, y=y_col, title=f"{y_col} over {x_col}")
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    elif chart_type == "scatter" and x_col and y_col:
-                        fig = px.scatter(df, x=x_col, y=y_col, title=f"{y_col} vs {x_col}")
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    elif chart_type == "histogram" and x_col:
-                        fig = px.histogram(df, x=x_col, title=f"Distribution of {x_col}")
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    elif chart_type == "pie" and x_col:
-                        counts = df[x_col].value_counts().reset_index()
-                        counts.columns = [x_col, "count"]
-                        fig = px.pie(counts, names=x_col, values="count", title=f"Share of {x_col}")
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    elif chart_type == "none":
-                        pass  # answer_text already shown above
-
-                except Exception as e:
-                    st.warning(f"Couldn't build a chart for that: {e}")
+                answer = answer_data_question(
+                    user_question,
+                    results["summary"],
+                    results["column_types"],
+                    results["numeric_stats"],
+                    results["categorical_stats"],
+                    results["outliers"]
+                )
+            st.markdown(answer)
 else:
     st.info("👆 Upload a CSV, Excel, or JSON file to get started.")
