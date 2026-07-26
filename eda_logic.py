@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import plotly.express as px
 
 
@@ -29,10 +30,12 @@ def detect_column_types(df):
             column_types[col] = "text"
 
     return column_types
+
+
 def apply_filters(df, filters):
     """Apply a dictionary of filters to the dataframe."""
     filtered_df = df.copy()
-    
+
     for col, condition in filters.items():
         if condition["type"] == "categorical":
             if condition["values"]:
@@ -40,8 +43,74 @@ def apply_filters(df, filters):
         elif condition["type"] == "numeric":
             low, high = condition["range"]
             filtered_df = filtered_df[(filtered_df[col] >= low) & (filtered_df[col] <= high)]
-    
+
     return filtered_df
+
+
+def apply_imputation(df, strategy_map):
+    """Fill missing values in selected columns using the chosen strategy per column."""
+    imputed_df = df.copy()
+
+    for col, strategy in strategy_map.items():
+        if strategy == "mean":
+            imputed_df[col] = imputed_df[col].fillna(imputed_df[col].mean())
+        elif strategy == "median":
+            imputed_df[col] = imputed_df[col].fillna(imputed_df[col].median())
+        elif strategy == "mode":
+            mode_val = imputed_df[col].mode()
+            if not mode_val.empty:
+                imputed_df[col] = imputed_df[col].fillna(mode_val[0])
+        elif strategy == "drop_rows":
+            imputed_df = imputed_df.dropna(subset=[col])
+
+    return imputed_df
+
+
+# Maximum unique values allowed for one-hot encoding.
+# Above this, get_dummies() creates too many columns and can exhaust memory.
+ONEHOT_MAX_UNIQUE = 50
+
+
+def apply_transformations(df, transform_map):
+    """
+    Apply log scale, normalization, or one-hot encoding to selected columns.
+
+    Returns:
+        transformed_df: the transformed dataframe
+        skipped_cols: list of (col_name, unique_count) tuples that were
+                      skipped because they had too many unique values for
+                      one-hot encoding
+    """
+    transformed_df = df.copy()
+    skipped_cols = []
+
+    for col, method in transform_map.items():
+        if method == "log":
+            min_val = transformed_df[col].min()
+            if min_val <= 0:
+                transformed_df[col] = np.log1p(transformed_df[col] - min_val + 1)
+            else:
+                transformed_df[col] = np.log1p(transformed_df[col])
+
+        elif method == "normalize":
+            min_val = transformed_df[col].min()
+            max_val = transformed_df[col].max()
+            if max_val != min_val:
+                transformed_df[col] = (transformed_df[col] - min_val) / (max_val - min_val)
+
+        elif method == "onehot":
+            unique_count = transformed_df[col].nunique()
+            if unique_count > ONEHOT_MAX_UNIQUE:
+                # Too many unique values -- one-hot encoding would create
+                # an enormous number of columns and can crash with an
+                # out-of-memory error. Skip it and report back to the caller.
+                skipped_cols.append((col, unique_count))
+                continue
+            dummies = pd.get_dummies(transformed_df[col], prefix=col)
+            transformed_df = pd.concat([transformed_df.drop(columns=[col]), dummies], axis=1)
+
+    return transformed_df, skipped_cols
+
 
 def get_summary(df):
     """Overall dataset summary."""
@@ -92,16 +161,63 @@ def plot_correlation(df):
     return px.imshow(corr, text_auto=".2f", color_continuous_scale="Teal", title="Correlation Heatmap")
 
 
+def plot_missing_matrix(df):
+    """Visualize missing values across all columns."""
+    missing_data = df.isnull()
+    if missing_data.sum().sum() == 0:
+        return None
+
+    missing_numeric = missing_data.astype(int)
+
+    fig = px.imshow(
+        missing_numeric.T,
+        aspect="auto",
+        color_continuous_scale=["#1c1f26", "#ef4444"],
+        title="Missing Values Map (red = missing)",
+        labels=dict(x="Row Index", y="Column", color="Missing")
+    )
+    fig.update_layout(coloraxis_showscale=False)
+    return fig
+
+
+def detect_outliers(df):
+    """Flag outliers in numeric columns using the IQR method."""
+    outlier_summary = {}
+    numeric_cols = df.select_dtypes(include="number").columns
+
+    for col in numeric_cols:
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+
+        outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)]
+        outlier_count = len(outliers)
+
+        if outlier_count > 0:
+            outlier_summary[col] = {
+                "count": outlier_count,
+                "pct": round(outlier_count / len(df) * 100, 2),
+                "lower_bound": round(lower_bound, 2),
+                "upper_bound": round(upper_bound, 2)
+            }
+
+    return outlier_summary
+
+
 def run_eda(df):
-    """Master function — runs everything and returns one results dictionary."""
+    """Master function - runs everything and returns one results dictionary."""
     col_types = detect_column_types(df)
     summary = get_summary(df)
 
     numeric_cols = [c for c, t in col_types.items() if t == "numeric"]
     categorical_cols = [c for c, t in col_types.items() if t == "categorical"]
 
-    numeric_stats, categorical_stats = {}, {}
-    numeric_charts, categorical_charts = {}, {}
+    numeric_stats = {}
+    categorical_stats = {}
+    numeric_charts = {}
+    categorical_charts = {}
 
     for c in numeric_cols:
         try:
@@ -117,12 +233,20 @@ def run_eda(df):
         except Exception:
             continue
 
-    return {
+    correlation_chart = plot_correlation(df)
+    missing_matrix_chart = plot_missing_matrix(df)
+    outliers = detect_outliers(df)
+
+    results = {
         "summary": summary,
         "column_types": col_types,
         "numeric_stats": numeric_stats,
         "categorical_stats": categorical_stats,
         "numeric_charts": numeric_charts,
         "categorical_charts": categorical_charts,
-        "correlation_chart": plot_correlation(df)
+        "correlation_chart": correlation_chart,
+        "missing_matrix_chart": missing_matrix_chart,
+        "outliers": outliers
     }
+
+    return results
