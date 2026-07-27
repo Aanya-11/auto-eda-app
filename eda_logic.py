@@ -129,14 +129,45 @@ def get_categorical_stats(df, col):
     }
 
 
+# ---------------------------------------------------------------------------
+# NEW: shared chart styling helper (does not alter any existing logic above)
+# ---------------------------------------------------------------------------
+def style_fig(fig, x_title=None, y_title=None):
+    """Apply consistent, clean styling to any Plotly figure used in the app."""
+    fig.update_layout(
+        plot_bgcolor="#0e1117",
+        paper_bgcolor="#0e1117",
+        font=dict(color="#fafafa", size=13, family="Segoe UI, sans-serif"),
+        title=dict(font=dict(size=18, color="#fafafa")),
+        margin=dict(l=50, r=30, t=60, b=50),
+        bargap=0.15,
+        xaxis=dict(
+            title=x_title,
+            showgrid=False,
+            zeroline=False,
+            linecolor="#2a2e37",
+        ),
+        yaxis=dict(
+            title=y_title,
+            showgrid=True,
+            gridcolor="#1c1f26",
+            zeroline=False,
+        ),
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
+
 def plot_numeric(df, col):
-    return px.histogram(df, x=col, marginal="box", title=f"Distribution of {col}")
+    fig = px.histogram(df, x=col, title=f"Distribution of {col}", color_discrete_sequence=["#14b8a6"])
+    return style_fig(fig, x_title=col, y_title="Count")
 
 
 def plot_categorical(df, col, top_n=10):
     counts = df[col].value_counts().nlargest(top_n).reset_index()
     counts.columns = [col, "count"]
-    return px.bar(counts, x=col, y="count", title=f"Top values in {col}")
+    fig = px.bar(counts, x=col, y="count", title=f"Top values in {col}", color_discrete_sequence=["#60a5fa"])
+    return style_fig(fig, x_title=col, y_title="Count")
 
 
 def plot_correlation(df):
@@ -144,7 +175,8 @@ def plot_correlation(df):
     if numeric_df.shape[1] < 2:
         return None
     corr = numeric_df.corr()
-    return px.imshow(corr, text_auto=".2f", color_continuous_scale="Teal", title="Correlation Heatmap")
+    fig = px.imshow(corr, text_auto=".2f", color_continuous_scale="Teal", title="Correlation Heatmap")
+    return style_fig(fig)
 
 
 def plot_missing_matrix(df):
@@ -163,7 +195,7 @@ def plot_missing_matrix(df):
         labels=dict(x="Row Index", y="Column", color="Missing")
     )
     fig.update_layout(coloraxis_showscale=False)
-    return fig
+    return style_fig(fig)
 
 
 def detect_outliers(df):
