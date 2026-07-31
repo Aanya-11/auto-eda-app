@@ -110,7 +110,7 @@ streamlit run app.py
 ## 👤 Author
 
 **Aanya Dubey**
-B.Tech CSE | Aspiring Data Analyst / Data Scientist
+B.Tech CSE (DATA SCIENCE)
 
 - GitHub: [@Aanya-11](https://github.com/Aanya-11)
 
